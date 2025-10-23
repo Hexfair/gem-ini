@@ -2,9 +2,12 @@
 import { runParser, TelegramPost } from "@/lib/parser";
 import { processChunkWithAI } from "@/lib/ai";
 
-export const dynamic = "force-dynamic"; // Обязательно для SSE
+export const dynamic = "force-dynamic";
 
-// Функция для отправки событий в SSE-поток
+const NUM_CHUNKS = 8;
+const API_DELAY_SECONDS = 65;
+const API_DELAY_MS = API_DELAY_SECONDS * 1000;
+
 function sendEvent(
   controller: ReadableStreamDefaultController,
   eventName: string,
@@ -13,7 +16,6 @@ function sendEvent(
   controller.enqueue(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-// Функция для форматирования постов в одну строку
 function formatPostsToString(posts: TelegramPost[]): string {
   return posts
     .map(
@@ -25,7 +27,6 @@ function formatPostsToString(posts: TelegramPost[]): string {
     .join("");
 }
 
-// Функция для разбивки текста на части
 function splitTextIntoChunks(text: string, numChunks: number): string[] {
   const chunks: string[] = [];
   const chunkSize = Math.ceil(text.length / numChunks);
@@ -38,58 +39,75 @@ function splitTextIntoChunks(text: string, numChunks: number): string[] {
 export async function GET() {
   const stream = new ReadableStream({
     async start(controller) {
-      // Отправляет событие и логгирует его
       const dispatch = (event: string, data: object) => {
         console.log(`SSE Event: ${event}`, data);
         sendEvent(controller, event, data);
       };
 
       try {
-        // --- ШАГ 1: ПАРСИНГ ---
         dispatch("progress", {
           message: "Начинаю парсинг Telegram-каналов...",
         });
-        const posts = await runParser();
+
+        const parsingProgressCallback = (details: {
+          channel: string;
+          index: number;
+          total: number;
+        }) => {
+          const channelNumber = details.index + 1;
+          dispatch("progress", {
+            message: `Парсинг канала ${channelNumber}/${details.total}: ${details.channel}...`,
+          });
+        };
+
+        const posts = await runParser(parsingProgressCallback);
+
         if (posts.length === 0) {
           throw new Error(
             "Не найдено ни одного поста. Проверьте каналы и время."
           );
         }
         dispatch("progress", {
-          message: `Собрано ${posts.length} постов. Готовлю к анализу...`,
+          message: `Парсинг завершен. Собрано ${posts.length} постов.`,
         });
 
         const largeString = formatPostsToString(posts);
-
-        // --- ШАГ 2: ОБРАБОТКА НЕЙРОСЕТЬЮ ---
-        const NUM_CHUNKS = 8;
         const chunks = splitTextIntoChunks(largeString, NUM_CHUNKS);
 
         dispatch("progress", {
-          message: `Текст разбит на ${NUM_CHUNKS} частей. Отправляю на обработку...`,
+          message: `Текст разбит на ${NUM_CHUNKS} частей. Начинаю обработку в Gemini...`,
         });
 
-        const promises = chunks.map((chunk, index) =>
-          processChunkWithAI(chunk).then((result) => {
+        const allPartialResults = [];
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const chunkNumber = i + 1;
+
+          dispatch("progress", {
+            message: `Отправляю часть ${chunkNumber}/${NUM_CHUNKS} на анализ...`,
+          });
+
+          const result = await processChunkWithAI(chunk);
+          allPartialResults.push(result);
+
+          dispatch("progress", {
+            message: `Часть ${chunkNumber}/${NUM_CHUNKS} успешно обработана.`,
+          });
+
+          if (chunkNumber < chunks.length) {
             dispatch("progress", {
-              message: `Обработана часть ${index + 1}/${NUM_CHUNKS}`,
+              message: `Пауза ${API_DELAY_SECONDS} секунд из-за ограничений API...`,
             });
-            return result;
-          })
-        );
+            await new Promise((resolve) => setTimeout(resolve, API_DELAY_MS));
+          }
+        }
 
-        const allResults = await Promise.all(promises);
-
-        // --- ШАГ 3: СБОРКА РЕЗУЛЬТАТА ---
-        // Просто "сплющиваем" массив массивов в один
-        const finalJson = allResults.flat();
-
+        const finalJson = allPartialResults.flat();
         dispatch("progress", {
           message:
-            "Анализ завершен. Отправляю данные для генерации документа...",
+            "Анализ всех частей завершен. Отправляю данные для генерации документа...",
         });
-
-        // --- ШАГ 4: ОТПРАВКА ФИНАЛЬНЫХ ДАННЫХ ---
         dispatch("final_data", { jsonData: finalJson });
       } catch (error: any) {
         console.error("Error in SSE stream:", error);
@@ -97,7 +115,6 @@ export async function GET() {
           message: error.message || "Произошла неизвестная ошибка на сервере",
         });
       } finally {
-        // --- ШАГ 5: ЗАКРЫТИЕ ПОТОКА ---
         console.log("Closing SSE stream");
         controller.close();
       }

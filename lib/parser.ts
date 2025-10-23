@@ -1,7 +1,6 @@
 // lib/parser.ts
 
 import * as cheerio from "cheerio";
-// ИСПРАВЛЕНИЕ 1: Импортируем типы Cheerio и Element напрямую
 //@ts-ignore
 import type { Cheerio, Element } from "cheerio";
 import { promises as fs } from "fs";
@@ -39,7 +38,6 @@ function extractUrlsFromStyle(styleValue: string | null | undefined): string[] {
 
 function selectMainTextBlock(
   $: cheerio.CheerioAPI,
-  // ИСПОЛЬЗУЕМ ТИПЫ НАПРЯМУЮ
   root: Cheerio<Element>
 ): Cheerio<Element> | null {
   const textBlocks = root.find(".tgme_widget_message_text.js-message_text");
@@ -78,7 +76,6 @@ function extractMediaFromElement(
       const clone = block.clone();
       clone.find(".tgme_widget_message_reply, .js-message_reply_text").remove();
 
-      // ИСПРАВЛЕНИЕ 2: Оборачиваем тело .each в {}
       clone.find("img[src]").each((_, el) => {
         const src = $(el).attr("src");
         if (src && !/telegram\.org\/img\/emoji|userpic|avatar/.test(src)) {
@@ -203,17 +200,26 @@ async function parseChannelByDatetime(
   }
 }
 
-export async function runParser(): Promise<TelegramPost[]> {
+export async function runParser(
+  onProgress?: (details: {
+    channel: string;
+    index: number;
+    total: number;
+  }) => void
+): Promise<TelegramPost[]> {
   const channelsPath = path.join(process.cwd(), "channels.txt");
   const data = await fs.readFile(channelsPath, "utf-8");
   const channels = data
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
+
   if (channels.length === 0) {
     throw new Error("Файл 'channels.txt' пуст или не найден.");
   }
+
   console.log(`Загружено ${channels.length} каналов: ${channels.join(", ")}`);
+
   const now = new Date();
   const startOfDayLocal = new Date(
     now.getFullYear(),
@@ -224,6 +230,7 @@ export async function runParser(): Promise<TelegramPost[]> {
     0
   );
   const startDatetimeUTC = fromZonedTime(startOfDayLocal, mskTimeZone);
+
   console.log(
     `Парсим сообщения с ${formatInTimeZone(
       startDatetimeUTC,
@@ -231,9 +238,16 @@ export async function runParser(): Promise<TelegramPost[]> {
       "yyyy-MM-dd HH:mm zzz"
     )}`
   );
+
   let allResults: TelegramPost[] = [];
+
   for (let i = 0; i < channels.length; i++) {
     const channel = channels[i];
+
+    if (onProgress) {
+      onProgress({ channel, index: i, total: channels.length });
+    }
+
     console.log(
       `\n--- Обработка канала ${i + 1}/${channels.length}: ${channel} ---\n`
     );
@@ -243,12 +257,15 @@ export async function runParser(): Promise<TelegramPost[]> {
     );
     allResults.push(...channelResults);
     console.log(`Собрано ${channelResults.length} постов с канала ${channel}.`);
+
     if (i < channels.length - 1) {
       console.log("Пауза 1 секунда...");
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
+
   allResults.sort((a, b) => b.datetime.getTime() - a.datetime.getTime());
+
   console.log(
     `\nИТОГО: Собрано ${allResults.length} постов из ${channels.length} каналов.`
   );

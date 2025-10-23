@@ -1,17 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import "./globals.css";
-// Импортируем ваш компонент кнопки, но использовать будем его логику
-import GenerateDocButton, { Section } from "@/utils/GenerateDocButton";
+import "./globals.css"; // Убедитесь, что этот файл существует
 
-// Т.к. GenerateDocButton - компонент, а нам нужна логика,
-// вы можете либо переделать его в hook/функцию, либо вызвать его невидимым.
-// Проще всего скопировать его логику прямо сюда.
-
+// Предполагается, что эти утилиты для DOCX лежат в отдельном файле
+// Если нет, просто скопируйте их логику прямо сюда
 import { Packer } from "docx";
-// Предположим, что buildDocFromJson экспортируется из файла с кнопкой
-import { buildDocFromJson } from "@/utils/GenerateDocButton";
+import { buildDocFromJson, Section } from "@/utils/GenerateDocButton";
 
 export default function Home() {
   const [loading, setLoading] = useState(false);
@@ -27,11 +22,6 @@ export default function Home() {
 
     const eventSource = new EventSource("/api/process-all");
 
-    eventSource.onmessage = (event) => {
-      // Это общее событие, мы будем использовать именованные
-      console.log("Received generic message:", event.data);
-    };
-
     eventSource.addEventListener("progress", (event) => {
       const data = JSON.parse(event.data);
       setProgressMessage(data.message);
@@ -39,9 +29,9 @@ export default function Home() {
 
     eventSource.addEventListener("final_data", (event) => {
       const data = JSON.parse(event.data);
-      setFinalJsonData(data.jsonData); // Сохраняем финальные данные
+      setFinalJsonData(data.jsonData);
       setProgressMessage("Данные получены! Начинаю генерацию документа...");
-      eventSource.close(); // Завершаем соединение
+      eventSource.close();
     });
 
     eventSource.onerror = (err) => {
@@ -52,12 +42,10 @@ export default function Home() {
     };
   };
 
-  // Этот эффект запустится, когда finalJsonData будет получен
   useEffect(() => {
     if (finalJsonData) {
       const generateAndDownload = async () => {
         try {
-          // Вызываем логику из вашего GenerateDocButton
           const doc = await buildDocFromJson(finalJsonData);
           const blob = await Packer.toBlob(doc);
           const url = URL.createObjectURL(blob);
