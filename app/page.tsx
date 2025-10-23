@@ -1,175 +1,114 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./globals.css";
-import GenerateDocButton from "@/utils/GenerateDocButton";
+// Импортируем ваш компонент кнопки, но использовать будем его логику
+import GenerateDocButton, { Section } from "@/utils/GenerateDocButton";
 
-// Доступные модели
-const MODELS = [
-  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-  { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
-];
+// Т.к. GenerateDocButton - компонент, а нам нужна логика,
+// вы можете либо переделать его в hook/функцию, либо вызвать его невидимым.
+// Проще всего скопировать его логику прямо сюда.
+
+import { Packer } from "docx";
+// Предположим, что buildDocFromJson экспортируется из файла с кнопкой
+import { buildDocFromJson } from "@/utils/GenerateDocButton";
 
 export default function Home() {
-  const [input, setInput] = useState("");
-  const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [progressMessage, setProgressMessage] = useState("");
   const [error, setError] = useState("");
-  const [selectedModel, setSelectedModel] = useState(MODELS[0].id); // По умолчанию первая модель
+  const [finalJsonData, setFinalJsonData] = useState<Section[] | null>(null);
 
-  const handleClick = async () => {
-    if (!input.trim()) {
-      setError("Пожалуйста, введите текст");
-      return;
-    }
-
+  const handleStart = async () => {
     setLoading(true);
     setError("");
-    setOutput("");
+    setProgressMessage("Подключение к серверу...");
+    setFinalJsonData(null);
 
-    try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: input,
-          model: selectedModel,
-        }),
-      });
+    const eventSource = new EventSource("/api/process-all");
 
-      const data = await res.json();
+    eventSource.onmessage = (event) => {
+      // Это общее событие, мы будем использовать именованные
+      console.log("Received generic message:", event.data);
+    };
 
-      if (!res.ok) {
-        throw new Error(data.error || "Ошибка при отправке запроса");
-      }
+    eventSource.addEventListener("progress", (event) => {
+      const data = JSON.parse(event.data);
+      setProgressMessage(data.message);
+    });
 
-      setOutput(data.text || "Получен пустой ответ");
-    } catch (err: any) {
-      console.error("Ошибка:", err);
-      setError(err.message || "Произошла ошибка при отправке запроса");
-      setOutput("");
-    } finally {
+    eventSource.addEventListener("final_data", (event) => {
+      const data = JSON.parse(event.data);
+      setFinalJsonData(data.jsonData); // Сохраняем финальные данные
+      setProgressMessage("Данные получены! Начинаю генерацию документа...");
+      eventSource.close(); // Завершаем соединение
+    });
+
+    eventSource.onerror = (err) => {
+      console.error("EventSource failed:", err);
+      setError("Ошибка соединения с сервером. Попробуйте снова.");
       setLoading(false);
-    }
+      eventSource.close();
+    };
   };
 
-  const data = [
-    {
-      title: "Первый раздел документа",
-      data: [
-        {
-          subtitle: "Введение в тему",
-          text: "Это основной текст для первого подраздела. Он описывает важные аспекты и детали. Текст будет автоматически переноситься по словам, если он не помещается в одну строку. Это очень удобно для форматирования больших объемов информации.",
-          images: [
-            "https://pngicon.ru/file/uploads/popugaj.png",
-            "/images/image2.png",
-          ], // Путь от папки public
-        },
-        {
-          subtitle: "Основные положения",
-          text: "Здесь мы рассматриваем ключевые моменты. Шрифт Times New Roman размером 14 пунктов является стандартом для многих официальных документов.",
-          images: ["/images/image3.png"],
-        },
-      ],
-    },
-    {
-      title: "Второй раздел документа",
-      data: [
-        {
-          subtitle: "Анализ данных",
-          text: "Текст второго раздела. Мы анализируем полученные данные и делаем выводы. Поля страницы установлены как стандартные для формата А4.",
-          images: [], // Можно оставлять пустым, если картинок нет
-        },
-      ],
-    },
-    {
-      title: "Третий раздел: Заключение",
-      data: [
-        {
-          subtitle: "Выводы и рекомендации",
-          text: "В заключительной части мы подводим итоги проделанной работы и даем рекомендации для дальнейших действий. Весь документ оформлен в едином стиле согласно требованиям.",
-          images: ["/images/image4.png"],
-        },
-      ],
-    },
-  ] as const;
+  // Этот эффект запустится, когда finalJsonData будет получен
+  useEffect(() => {
+    if (finalJsonData) {
+      const generateAndDownload = async () => {
+        try {
+          // Вызываем логику из вашего GenerateDocButton
+          const doc = await buildDocFromJson(finalJsonData);
+          const blob = await Packer.toBlob(doc);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `report_${new Date().toISOString().split("T")[0]}.docx`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+          setProgressMessage("Документ успешно сгенерирован и скачан!");
+        } catch (e) {
+          console.error(e);
+          setError("Не удалось сформировать DOCX документ.");
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      generateAndDownload();
+    }
+  }, [finalJsonData]);
 
   return (
     <div className="container">
       <div className="content">
         <div className="header">
-          <h1>Google Gemini API Пример</h1>
-          <p>Введите текст и получите ответ от ИИ</p>
+          <h1>Анализатор новостей</h1>
+          <p>Нажмите "Старт" для сбора, анализа и формирования отчета</p>
         </div>
 
         <div className="card">
-          <div className="form-group">
-            <label htmlFor="model" className="label">
-              Выберите модель
-            </label>
-            <select
-              id="model"
-              className="select"
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={loading}
-            >
-              {MODELS.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="input" className="label">
-              Входной текст
-            </label>
-            <textarea
-              id="input"
-              rows={6}
-              className="textarea"
-              placeholder="Введите текст для обработки..."
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                if (error) setError("");
-              }}
-            />
-          </div>
-
           <div className="button-container">
-            <button
-              onClick={handleClick}
-              disabled={loading || !input.trim()}
-              className="button"
-            >
-              {loading ? "Отправка..." : "Отправить запрос"}
+            <button onClick={handleStart} disabled={loading} className="button">
+              {loading ? "В процессе..." : "Старт"}
             </button>
           </div>
 
-          {error && <div className="error-message">Ошибка: {error}</div>}
+          {loading && (
+            <div className="progress-bar">
+              <div className="spinner"></div>
+              <p>{progressMessage}</p>
+            </div>
+          )}
 
-          <div className="form-group">
-            <label htmlFor="output" className="label">
-              Ответ от ИИ
-            </label>
-            <textarea
-              id="output"
-              rows={10}
-              className="textarea"
-              placeholder={
-                loading ? "Генерация ответа..." : "Ответ появится здесь..."
-              }
-              value={output}
-              readOnly
-            />
-          </div>
-          <GenerateDocButton data={data as any} filename="output.docx" />
+          {!loading && progressMessage && !error && (
+            <div className="success-message">{progressMessage}</div>
+          )}
+
+          {error && <div className="error-message">Ошибка: {error}</div>}
         </div>
       </div>
     </div>
