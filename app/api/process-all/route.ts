@@ -4,7 +4,7 @@ import { processChunkWithAI } from "@/lib/ai";
 
 export const dynamic = "force-dynamic";
 
-const NUM_CHUNKS = 8;
+const NUM_CHUNKS = 3;
 const API_DELAY_SECONDS = 65;
 const API_DELAY_MS = API_DELAY_SECONDS * 1000;
 
